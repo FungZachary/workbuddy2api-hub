@@ -61,6 +61,7 @@ import wb_accounts
 import wb_activity
 import wb_atrest
 import wb_catalog
+import wb_cn_sms
 import wb_egress
 import wb_ipintel
 import wb_logstore
@@ -17657,6 +17658,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._route_accounts_daily_chat_web(payload)
         if path == "/accounts/login/start":
             return self._route_accounts_login_start(payload)
+        if path == "/accounts/login/sms/send":
+            return self._route_accounts_login_sms_send(payload)
+        if path == "/accounts/login/sms/verify":
+            return self._route_accounts_login_sms_verify(payload)
         if path == "/accounts/login/cancel":
             return self._route_accounts_login_cancel(payload)
         if path == "/accounts/import/desktop":
@@ -18056,7 +18061,50 @@ class Handler(BaseHTTPRequestHandler):
 
     def _route_accounts_login_cancel(self, payload):
         state = payload.get("state") or ""
+        wb_cn_sms.drop(state)
         return self._json(200, {"cancelled": POOL.cancel_login(state)})
+
+    def _cn_sms_login(self, state):
+        state = str(state or "").strip()
+        with POOL._lock:
+            info = POOL.logins.get(state)
+        if not info:
+            raise wb_cn_sms.SmsLoginError("登录会话不存在或已过期，请重新生成")
+        if (info.get("realm") or "") != "cn":
+            raise wb_cn_sms.SmsLoginError("手机号登录只用于国内版")
+        token = wb_cn_sms.load_device_token(ACCOUNTS_DIR)
+        if not token:
+            raise wb_cn_sms.SmsLoginError(
+                "缺少国内版设备票据。把 x-device-token 放到 accounts/device-token.txt，"
+                "或设置环境变量 WB_CN_DEVICE_TOKEN")
+        return wb_cn_sms.session_for(state, token)
+
+    def _route_accounts_login_sms_send(self, payload):
+        try:
+            login = self._cn_sms_login(payload.get("state"))
+            sent = login.send(payload.get("mobile"))
+        except wb_cn_sms.SmsLoginError as exc:
+            return self._error(400, str(exc), "invalid_request_error")
+        except Exception as exc:
+            return self._error(502, "验证码发送失败: %s" % exc)
+        log("cn sms sent (state=%s)" % login.hub_state[:8])
+        return self._json(200, {"ok": True, "expiresIn": sent["expiresIn"]})
+
+    def _route_accounts_login_sms_verify(self, payload):
+        state = str(payload.get("state") or "")
+        try:
+            login = self._cn_sms_login(state)
+            login.verify_and_bind(payload.get("code"))
+        except wb_cn_sms.SmsLoginError as exc:
+            return self._error(400, str(exc), "invalid_request_error")
+        except Exception as exc:
+            return self._error(502, "验证码登录失败: %s" % exc)
+        result = POOL.poll_login(state)
+        wb_cn_sms.drop(state)
+        if result.get("status") == "ok":
+            account = result.get("account") or {}
+            log("cn sms login ok (state=%s, uid=%s)" % (state[:8], str(account.get("uid") or "")[:8]))
+        return self._json(200, result)
 
     def _route_accounts_import_desktop(self, payload):
         # Two ways to call this:

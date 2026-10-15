@@ -1378,6 +1378,22 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '复制': 'Copy',
     '复制失败:': 'Copy failed:',
     '复制登录链接': 'Copy sign-in link',
+    '用手机号收取验证码，或在浏览器里打开下方链接完成授权': 'Get a code on your phone, or open the link below in a browser and finish sign-in',
+    '国内版也可以直接用手机号登录。验证码大约 60 秒内有效。': 'China accounts can also sign in here with a phone number. The code is valid for about 60 seconds.',
+    '也可以继续用上面的浏览器链接。': 'You can still use the browser link above.',
+    '手机号登录': 'Phone sign-in',
+    '手机号': 'Phone number',
+    ' 秒后可重发': 's until you can resend',
+    '发送验证码': 'Send code',
+    '验证码': 'Verification code',
+    '提交登录': 'Submit sign-in',
+    '11 位手机号': '11-digit phone number',
+    '短信验证码': 'SMS code',
+    '正在发送验证码…': 'Sending code…',
+    '验证码已发送，请在 60 秒内填写': 'Code sent. Enter it within 60 seconds.',
+    '正在校验验证码并登录…': 'Checking the code and signing in…',
+    '发送失败:': 'Send failed:',
+    '登录失败:': 'Sign-in failed:',
     '复制当前视图显示的日志': 'Copy the log lines shown in the current view',
     '多个账号按会话粘性 + 轮询使用；某个账号被上游拒绝时自动切到下一个': 'Accounts are used with session stickiness plus round-robin; when one is rejected upstream it switches to the next',
     '天': 'days',
@@ -4573,7 +4589,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
         </div>
       </div>
       <div class="step" id="step1"><div class="n">1</div><div class="t" id="step1Text">正在申请授权登录链接…</div></div>
-      <div class="step" id="step2"><div class="n">2</div><div class="t">在浏览器里打开下方链接并完成登录授权</div></div>
+      <div class="step" id="step2"><div class="n">2</div><div class="t" id="step2Text">在浏览器里打开下方链接并完成登录授权</div></div>
+      <div id="loginSmsBox" style="display:none"></div>
       <div id="loginLinkBox"></div>
       <div class="step" id="step3"><div class="n">3</div><div class="t">等待授权回调完成（自动检测）</div></div>
       <p class="hint" id="loginStatus" style="font-weight:500"></p>
@@ -4771,7 +4788,58 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 </div>
 
 <script>
-let loginState = null, loginTimer = null;
+let loginState = null, loginTimer = null, loginSmsTimer = null;
+
+function clearLoginSmsTimer(){
+  if(loginSmsTimer){ clearInterval(loginSmsTimer); loginSmsTimer = null; }
+}
+
+function renderLoginSms(isCn){
+  const box = document.getElementById("loginSmsBox");
+  if(!box) return;
+  clearLoginSmsTimer();
+  if(!isCn){
+    box.style.display = "none";
+    box.innerHTML = "";
+    return;
+  }
+  box.style.display = "block";
+  box.innerHTML =
+    '<div style="background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:0 0 12px">'
+    + '<div style="font-size:12px;font-weight:600;margin-bottom:8px">手机号登录</div>'
+    + '<p class="hint" style="margin:0 0 10px">国内版也可以直接用手机号登录。验证码大约 60 秒内有效。也可以继续用上面的浏览器链接。</p>'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">'
+    + '<input class="slot-input" id="loginMobile" type="tel" inputmode="numeric" autocomplete="tel" placeholder="11 位手机号" style="flex:1;min-width:160px">'
+    + '<button type="button" class="sec" id="loginSmsSend" onclick="sendLoginSms()">发送验证码</button>'
+    + '</div>'
+    + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+    + '<input class="slot-input" id="loginSmsCode" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="短信验证码" style="flex:1;min-width:160px">'
+    + '<button type="button" id="loginSmsSubmit" onclick="submitLoginSms()">提交登录</button>'
+    + '</div>'
+    + '<p class="hint" id="loginSmsStatus" style="margin:8px 0 0;font-weight:500"></p>'
+    + '</div>';
+}
+
+function startLoginSmsCooldown(seconds){
+  const button = document.getElementById("loginSmsSend");
+  clearLoginSmsTimer();
+  let left = seconds;
+  function tick(){
+    const current = document.getElementById("loginSmsSend");
+    if(!current){ clearLoginSmsTimer(); return; }
+    if(left <= 0){
+      current.disabled = false;
+      current.textContent = "发送验证码";
+      clearLoginSmsTimer();
+      return;
+    }
+    current.disabled = true;
+    current.textContent = left + " 秒后可重发";
+    left -= 1;
+  }
+  tick();
+  loginSmsTimer = setInterval(tick, 1000);
+}
 
 function openLogin(){
   const m = document.getElementById("loginModal");
@@ -4782,6 +4850,7 @@ function closeLogin(){
   const m = document.getElementById("loginModal");
   if(m) m.classList.remove("show");
   if(loginTimer){ clearInterval(loginTimer); loginTimer = null; }
+  clearLoginSmsTimer();
   if(loginState){ postJSON("/accounts/login/cancel", {state: loginState}).catch(()=>{}); loginState = null; }
 }
 
@@ -4809,7 +4878,14 @@ async function triggerLoginForSelectedRealm(){
   const isCn = (realm === "cn");
 
   if(loginTimer){ clearInterval(loginTimer); loginTimer = null; }
+  clearLoginSmsTimer();
   if(loginState){ postJSON("/accounts/login/cancel", {state: loginState}).catch(()=>{}); loginState = null; }
+
+  renderLoginSms(isCn);
+  const step2Text = document.getElementById("step2Text");
+  if(step2Text) step2Text.textContent = isCn
+    ? "用手机号收取验证码，或在浏览器里打开下方链接完成授权"
+    : "在浏览器里打开下方链接并完成登录授权";
 
   const linkBox = document.getElementById("loginLinkBox");
   const statusBox = document.getElementById("loginStatus");
@@ -4840,6 +4916,67 @@ async function triggerLoginForSelectedRealm(){
   }catch(e){
     if(statusBox) statusBox.textContent = "发起失败: " + e.message;
     if(s1) s1.className = "step";
+  }
+}
+
+async function sendLoginSms(){
+  const status = document.getElementById("loginSmsStatus");
+  const input = document.getElementById("loginMobile");
+  const mobile = input ? input.value.trim() : "";
+  if(!loginState){
+    if(status) status.textContent = "登录会话还没准备好，请重新生成链接";
+    return;
+  }
+  if(status) status.textContent = "正在发送验证码…";
+  const button = document.getElementById("loginSmsSend");
+  if(button) button.disabled = true;
+  try{
+    const r = await postJSON("/accounts/login/sms/send", {state: loginState, mobile: mobile});
+    if(status) status.textContent = "验证码已发送，请在 60 秒内填写";
+    startLoginSmsCooldown(r.expiresIn || 60);
+  }catch(e){
+    if(status) status.textContent = "发送失败: " + e.message;
+    if(button) button.disabled = false;
+  }
+}
+
+async function submitLoginSms(){
+  const status = document.getElementById("loginSmsStatus");
+  const input = document.getElementById("loginSmsCode");
+  const code = input ? input.value.trim() : "";
+  if(!loginState){
+    if(status) status.textContent = "登录会话还没准备好，请重新生成链接";
+    return;
+  }
+  if(status) status.textContent = "正在校验验证码并登录…";
+  const button = document.getElementById("loginSmsSubmit");
+  if(button) button.disabled = true;
+  if(loginTimer){ clearInterval(loginTimer); loginTimer = null; }
+  try{
+    const r = await postJSON("/accounts/login/sms/verify", {state: loginState, code: code});
+    const statusBox = document.getElementById("loginStatus");
+    const s3 = document.getElementById("step3");
+    if(r.status === "ok"){
+      if(s3) s3.className = "step done";
+      const name = r.account && r.account.nickname;
+      if(statusBox) statusBox.textContent = "登录成功：" + name + " 已加入账号池";
+      if(status) status.textContent = "登录成功";
+      clearLoginSmsTimer();
+      loginState = null;
+      await loadAccounts();
+      setTimeout(closeLogin, 1200);
+      return;
+    }
+    if(status) status.textContent = r.message || r.status || "登录失败";
+    pollLogin();
+    loginTimer = setInterval(pollLogin, 2500);
+  }catch(e){
+    if(status) status.textContent = "登录失败: " + e.message;
+    pollLogin();
+    loginTimer = setInterval(pollLogin, 2500);
+  }finally{
+    const again = document.getElementById("loginSmsSubmit");
+    if(again) again.disabled = false;
   }
 }
 
